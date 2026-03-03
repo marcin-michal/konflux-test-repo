@@ -1,0 +1,80 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: simple-conforma-release
+spec:
+  description: >-
+    Minimal release pipeline with verify-conforma for testing.
+    Skips collect-data and fetches snapshot directly.
+  params:
+    - name: release
+      type: string
+      description: The namespaced name of the Release
+    - name: releasePlan
+      type: string
+      description: The namespaced name of the ReleasePlan
+    - name: releasePlanAdmission
+      type: string
+      default: ""
+    - name: releaseServiceConfig
+      type: string
+      default: ""
+    - name: snapshot
+      type: string
+      description: The namespaced name of the Snapshot
+    - name: enterpriseContractPolicy
+      type: string
+      default: "rh-ee-mmarcin-tenant/conforma-policy"
+    - name: verify_ec_task_bundle
+      type: string
+      default: "quay.io/enterprise-contract/ec-task-bundle:snapshot"
+    - name: verify_ec_task_git_revision
+      type: string
+      default: "main"
+  tasks:
+    - name: get-snapshot
+      params:
+        - name: snapshot
+          value: $(params.snapshot)
+      taskSpec:
+        params:
+          - name: snapshot
+        results:
+          - name: snapshotSpec
+            description: The snapshot spec JSON
+        steps:
+          - name: get
+            image: registry.redhat.io/openshift4/ose-cli:latest
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              NAMESPACE=$(echo "$(params.snapshot)" | cut -d'/' -f1)
+              NAME=$(echo "$(params.snapshot)" | cut -d'/' -f2)
+              echo "Fetching snapshot $NAME from namespace $NAMESPACE"
+              oc get snapshot "$NAME" -n "$NAMESPACE" -o jsonpath='{.spec}' | tee $(results.snapshotSpec.path)
+    - name: verify-conforma
+      taskRef:
+        resolver: bundles
+        params:
+          - name: bundle
+            value: $(params.verify_ec_task_bundle)
+          - name: name
+            value: verify-enterprise-contract
+          - name: kind
+            value: task
+      params:
+        - name: IMAGES
+          value: $(tasks.get-snapshot.results.snapshotSpec)
+        - name: POLICY_CONFIGURATION
+          value: $(params.enterpriseContractPolicy)
+        - name: STRICT
+          value: "false"
+        - name: IGNORE_REKOR
+          value: "true"
+        - name: CERTIFICATE_OIDC_ISSUER
+          value: "https://oauth2.sigstore.dev/auth"
+        - name: CERTIFICATE_IDENTITY_REGEXP
+          value: ".*"
+      runAfter:
+        - get-snapshot
